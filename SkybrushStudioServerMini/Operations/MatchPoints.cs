@@ -10,20 +10,21 @@ namespace SkybrushStudioServerMini.Operations
             app.MapPost("/operations/match-points", (Request request) =>
             {
                 //if fixed mapping, just 1:1 map the source to target
-                var mapping = new int?[request.source.Length];
+                var rawMapping = new int?[request.source.Length];
                 switch (request.method)
                 {
                     case MatchingMethod.Fixed:
-                        for (int i = 0; i < mapping.Length; i++)
+                        for (int i = 0; i < rawMapping.Length; i++)
                         {
-                            mapping[i] = i < request.target.Length ? i : (int?)null;
+                            rawMapping[i] = i < request.target.Length ? i : (int?)null;
                         }
                         break;
                     case MatchingMethod.Optimal:
-                        mapping = OptimalMapping(request.source, request.target);
+                        rawMapping = OptimalMapping(request.source, request.target);
                         break;
                 }
-                float clearance = ComputeClearance(mapping, request.source, request.target, request.radius);
+                float clearance = ComputeClearance(rawMapping, request.source, request.target, request.radius);
+                var mapping = NormalizeMapping(rawMapping, request.source, request.target);
                 var result = new Response
                 {
                     version = request.version,
@@ -58,6 +59,30 @@ namespace SkybrushStudioServerMini.Operations
                     mapping[i] = null;
             }
             return mapping;
+        }
+
+        private static int?[] NormalizeMapping(int?[] mapping, Point[] source, Point[] target)
+        {
+            var normalized = new int?[source.Length];
+            for (int i = 0; i < source.Length; i++)
+            {
+                if (i >= mapping.Length || !mapping[i].HasValue)
+                {
+                    normalized[i] = null;
+                    continue;
+                }
+
+                int targetIndex = mapping[i]!.Value;
+                if (targetIndex < 0 || targetIndex >= target.Length)
+                {
+                    normalized[i] = null;
+                    continue;
+                }
+
+                normalized[i] = PointsEqual(source[i], target[targetIndex]) ? null : targetIndex;
+            }
+
+            return normalized;
         }
 
         // Jonker-Volgenant style Hungarian algorithm, O(n^3)
@@ -187,6 +212,20 @@ namespace SkybrushStudioServerMini.Operations
                 sum += diff * diff;
             }
             return Math.Sqrt(sum);
+        }
+
+        private static bool PointsEqual(Point a, Point b, double epsilon = 1e-6)
+        {
+            if (a.coords.Length != b.coords.Length)
+                return false;
+
+            for (int d = 0; d < a.coords.Length; d++)
+            {
+                if (Math.Abs(a.coords[d] - b.coords[d]) > epsilon)
+                    return false;
+            }
+
+            return true;
         }
 
         record Request
