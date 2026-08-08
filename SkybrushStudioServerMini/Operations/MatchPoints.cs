@@ -9,21 +9,26 @@ namespace SkybrushStudioServerMini.Operations
         {
             app.MapPost("/operations/match-points", (Request request) =>
             {
-                //if fixed mapping, just 1:1 map the source to target
-                var rawMapping = new int?[request.source.Length];
+                // Response mapping is target-indexed: mapping[targetIndex] = sourceIndex
+                var rawMapping = new int?[request.target.Length];
                 switch (request.method)
                 {
                     case MatchingMethod.Fixed:
                         for (int i = 0; i < rawMapping.Length; i++)
                         {
-                            rawMapping[i] = i < request.target.Length ? i : (int?)null;
+                            rawMapping[i] = i < request.source.Length ? i : (int?)null;
                         }
                         break;
                     case MatchingMethod.Optimal:
                         rawMapping = OptimalMapping(request.source, request.target);
                         break;
                 }
-                float clearance = ComputeClearance(rawMapping, request.source, request.target, request.radius);
+
+                var radii = ParseRadii(request.radius, request.source.Length);
+                float? clearance = radii is null
+                    ? null
+                    : ComputeClearance(rawMapping, request.source, request.target, radii);
+
                 var mapping = NormalizeMapping(rawMapping, request.source, request.target);
                 var result = new Response
                 {
@@ -49,40 +54,79 @@ namespace SkybrushStudioServerMini.Operations
 
             int[] rowAssign = RunHungarian(cost, dim);
 
-            int?[] mapping = new int?[n];
+            int?[] mapping = new int?[m];
+            for (int j = 0; j < m; j++)
+                mapping[j] = null;
+
             for (int i = 0; i < n; i++)
             {
                 int j = rowAssign[i];
                 if (j >= 0 && j < m)
-                    mapping[i] = j;
-                else
-                    mapping[i] = null;
+                    mapping[j] = i;
             }
+
             return mapping;
         }
 
         private static int?[] NormalizeMapping(int?[] mapping, Point[] source, Point[] target)
         {
-            var normalized = new int?[source.Length];
-            for (int i = 0; i < source.Length; i++)
+            var normalized = new int?[target.Length];
+            for (int targetIndex = 0; targetIndex < target.Length; targetIndex++)
             {
-                if (i >= mapping.Length || !mapping[i].HasValue)
+                if (targetIndex >= mapping.Length || !mapping[targetIndex].HasValue)
                 {
-                    normalized[i] = null;
+                    normalized[targetIndex] = null;
                     continue;
                 }
 
-                int targetIndex = mapping[i]!.Value;
-                if (targetIndex < 0 || targetIndex >= target.Length)
+                int sourceIndex = mapping[targetIndex]!.Value;
+                if (sourceIndex < 0 || sourceIndex >= source.Length)
                 {
-                    normalized[i] = null;
+                    normalized[targetIndex] = null;
                     continue;
                 }
 
-                normalized[i] = PointsEqual(source[i], target[targetIndex]) ? null : targetIndex;
+                normalized[targetIndex] = PointsEqual(source[sourceIndex], target[targetIndex]) ? null : sourceIndex;
             }
 
             return normalized;
+        }
+
+        private static float[]? ParseRadii(JsonElement? radiusElement, int droneCount)
+        {
+            if (!radiusElement.HasValue)
+                return null;
+
+            JsonElement radius = radiusElement.Value;
+            if (radius.ValueKind == JsonValueKind.Null || radius.ValueKind == JsonValueKind.Undefined)
+                return null;
+
+            if (radius.ValueKind == JsonValueKind.Number)
+            {
+                float value = radius.GetSingle();
+                var radii = new float[droneCount];
+                for (int i = 0; i < droneCount; i++)
+                    radii[i] = value;
+                return radii;
+            }
+
+            if (radius.ValueKind == JsonValueKind.Array)
+            {
+                var values = radius.EnumerateArray()
+                    .Where(e => e.ValueKind == JsonValueKind.Number)
+                    .Select(e => e.GetSingle())
+                    .ToArray();
+
+                if (values.Length == 0)
+                    return null;
+
+                var radii = new float[droneCount];
+                for (int i = 0; i < droneCount; i++)
+                    radii[i] = i < values.Length ? values[i] : values[^1];
+                return radii;
+            }
+
+            return null;
         }
 
         // Jonker-Volgenant style Hungarian algorithm, O(n^3)
@@ -144,13 +188,14 @@ namespace SkybrushStudioServerMini.Operations
             return rowAssign;
         }
 
-        private static float ComputeClearance(int?[] mapping, Point[] source, Point[] target, float? radius)
+        private static float ComputeClearance(int?[] mapping, Point[] source, Point[] target, float[] radii)
         {
-            // Collect only matched (source, target) pairs
+            // Collect only matched (source, target) pairs from target-indexed mapping.
             var pairs = mapping
-                .Select((t, i) => (srcIdx: i, tgtIdx: t))
-                .Where(p => p.tgtIdx.HasValue)
-                .Select(p => (src: source[p.srcIdx], tgt: target[p.tgtIdx!.Value]))
+                .Select((srcIdx, tgtIdx) => (srcIdx, tgtIdx))
+                .Where(p => p.srcIdx.HasValue)
+                .Select(p => (srcIdx: p.srcIdx!.Value, tgtIdx: p.tgtIdx))
+                .Where(p => p.srcIdx >= 0 && p.srcIdx < source.Length && p.tgtIdx >= 0 && p.tgtIdx < target.Length)
                 .ToList();
 
             if (pairs.Count < 2)
@@ -162,12 +207,21 @@ namespace SkybrushStudioServerMini.Operations
             {
                 for (int j = i + 1; j < pairs.Count; j++)
                 {
-                    minDist = Math.Min(minDist, MinTrajectorySeparation(pairs[i].src, pairs[i].tgt, pairs[j].src, pairs[j].tgt));
+                    var a = pairs[i];
+                    var b = pairs[j];
+                    double separation = MinTrajectorySeparation(
+                        source[a.srcIdx],
+                        target[a.tgtIdx],
+                        source[b.srcIdx],
+                        target[b.tgtIdx]);
+
+                    double radiusA = a.srcIdx < radii.Length ? radii[a.srcIdx] : 0.0;
+                    double radiusB = b.srcIdx < radii.Length ? radii[b.srcIdx] : 0.0;
+                    minDist = Math.Min(minDist, separation - radiusA - radiusB);
                 }
             }
 
-            double r = radius ?? 0.0;
-            return (float)(minDist - 2.0 * r);
+            return (float)minDist;
         }
 
         // Minimum Euclidean distance between two linear trajectories over t in [0,1]
@@ -232,7 +286,7 @@ namespace SkybrushStudioServerMini.Operations
         {
             public required Point[] source { get; set; }
             public required Point[] target { get; set; }
-            public float? radius { get; set; }
+            public JsonElement? radius { get; set; }
             public MatchingMethod method { get; set; }
             public int version { get; set; }
         }
@@ -259,7 +313,7 @@ namespace SkybrushStudioServerMini.Operations
         {
             public int version { get; set; }
             public required int?[] mapping { get; set; }
-            public float clearance { get; set; }
+            public float? clearance { get; set; }
         }
 
         enum MatchingMethod
