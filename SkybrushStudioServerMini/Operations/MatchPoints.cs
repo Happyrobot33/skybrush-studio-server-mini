@@ -52,8 +52,10 @@ namespace SkybrushStudioServerMini.Operations
             for (int i = 0; i < n; i++)
             {
                 int j = rowAssign[i];
-                if (j < m)
+                if (j >= 0 && j < m)
                     mapping[i] = j;
+                else
+                    mapping[i] = null;
             }
             return mapping;
         }
@@ -109,6 +111,8 @@ namespace SkybrushStudioServerMini.Operations
             }
 
             int[] rowAssign = new int[n];
+            for (int i = 0; i < n; i++)
+                rowAssign[i] = -1;
             for (int j = 1; j <= n; j++)
                 if (p[j] != 0)
                     rowAssign[p[j] - 1] = j - 1;
