@@ -86,7 +86,7 @@ namespace SkybrushStudioServerMini.Operations
                     continue;
                 }
 
-                normalized[targetIndex] = PointsEqual(source[sourceIndex], target[targetIndex]) ? null : sourceIndex;
+                normalized[targetIndex] = sourceIndex;
             }
 
             return normalized;
